@@ -18,8 +18,8 @@ namespace CNTKLibraryCSEvalExamples
         {
             using (var test = new SetupMemoeryTests())
             {
-                test.NDArrayViewTest(device);
                 test.SetupUsingResetModel(device);
+                test.NDArrayViewTest(device);
             }
 
             Console.WriteLine("\n1. Run: Test saved object references.\n");
@@ -37,13 +37,13 @@ namespace CNTKLibraryCSEvalExamples
             Console.WriteLine("\nPrint out saved object references.");
             try
             {
-                Console.WriteLine("Device0: " + Device0.AsString() + "Type: " + Device0.Type);
-                Console.WriteLine("Axis0: " + Axis0.Name + "IsStaticAxis: " + Axis0.IsStatic);
-                Console.WriteLine("OutputVar: " + OutputVar.AsString() + "Name: " + OutputVar.Name + "Shape: " + OutputVar.Shape.AsString());
-                Console.WriteLine("OutputVar0: " + OutputVar0.AsString() + "Name: " + OutputVar0.Name + "Shape: " + OutputVar0.Shape.AsString());
-                Console.WriteLine("InputVar0: " + InputVar0.AsString() + "Name: " + InputVar0.Name + "Shape: " + InputVar0.Shape.AsString());
-                Console.WriteLine("ArgumentVar0: " + ArgumentVar0.AsString() + "Name: " + ArgumentVar0.Name + "Shape: " + ArgumentVar0.Shape.AsString());
-                Console.WriteLine("OutputVal: " + "Device: " + OutputVal.Device.AsString() + "Storage: " + OutputVal.StorgeFormat + "Shape: " + OutputVal.Shape.AsString() + "Data:");
+                Console.WriteLine("Device0: " + Device0.AsString() + ", Type: " + Device0.Type);
+                Console.WriteLine("Axis0: " + Axis0.Name + ", IsStaticAxis: " + Axis0.IsStatic);
+                Console.WriteLine("OutputVar: " + OutputVar.AsString() + ", Name: " + OutputVar.Name + ", Shape: " + OutputVar.Shape.AsString());
+                Console.WriteLine("OutputVar0: " + OutputVar0.AsString() + ", Name: " + OutputVar0.Name + ", Shape: " + OutputVar0.Shape.AsString());
+                Console.WriteLine("InputVar0: " + InputVar0.AsString() + ", Name: " + InputVar0.Name + ", Shape: " + InputVar0.Shape.AsString());
+                Console.WriteLine("ArgumentVar0: " + ArgumentVar0.AsString() + ", Name: " + ArgumentVar0.Name + ", Shape: " + ArgumentVar0.Shape.AsString());
+                Console.WriteLine("OutputVal: " + ", Device: " + OutputVal.Device.AsString() + ", Storage: " + OutputVal.StorgeFormat + ", Shape: " + OutputVal.Shape.AsString() + "Data:");
                 var outputData = OutputVal.GetDenseData<float>(OutputVar);
                 CNTKLibraryManagedExamples.PrintOutput(OutputVar.Shape.TotalSize, outputData);
             }
