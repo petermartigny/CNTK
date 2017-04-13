@@ -53,7 +53,8 @@ class ProposalLayer(UserFunction):
         #if len(top) > 1:
         #    top[1].reshape(1, 1, 1, 1)
 
-        return [output_variable(proposalShape, self.inputs[0].dtype, self.inputs[0].dynamic_axes, needs_gradient=False)] # , name="rpn_rois"
+        return [output_variable(proposalShape, self.inputs[0].dtype, self.inputs[0].dynamic_axes,
+                                name="pl_rois", needs_gradient=False)] # , name="rpn_rois"
 
     # returns
     # - pred_boxes (n, 4) as [x_low, y_low, x_high, y_high]

@@ -71,9 +71,12 @@ class AnchorTargetLayer(UserFunction):
         #top[2].reshape(1, A * 4, height, width)
         bbox_inside_weights_shape = (1, A * 4, height, width)
 
-        return [output_variable(labelShape, self.inputs[0].dtype, self.inputs[0].dynamic_axes, needs_gradient=False),
-                output_variable(bbox_target_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes, needs_gradient=False),
-                output_variable(bbox_inside_weights_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes, needs_gradient=False),]
+        return [output_variable(labelShape, self.inputs[0].dtype, self.inputs[0].dynamic_axes,
+                                name="objectness_target", needs_gradient=False),
+                output_variable(bbox_target_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes,
+                                name="rpn_bbox_target", needs_gradient=False),
+                output_variable(bbox_inside_weights_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes,
+                                name="rpn_bbox_inside_w", needs_gradient=False),]
 
     def forward(self, arguments, outputs, device=None, outputs_to_retain=None):
         if debug_fwd: print("--> Entering forward in {}".format(self.name))

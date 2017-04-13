@@ -53,10 +53,14 @@ class ProposalTargetLayer(UserFunction):
         #top[3].reshape(1, self._num_classes * 4)
         bbox_inside_weights_shape = (self._rois_per_image, self._num_classes * 4)
 
-        return [output_variable(rois_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes, needs_gradient=False), # , name="rpn_target_rois"
-                output_variable(labels_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes, needs_gradient=False),
-                output_variable(bbox_targets_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes, needs_gradient=False),
-                output_variable(bbox_inside_weights_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes, needs_gradient=False)]
+        return [output_variable(rois_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes,
+                                name="ptl_rois", needs_gradient=False), # , name="rpn_target_rois"
+                output_variable(labels_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes,
+                                name="label_targets", needs_gradient=False),
+                output_variable(bbox_targets_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes,
+                                name="bbox_targets", needs_gradient=False),
+                output_variable(bbox_inside_weights_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes,
+                                name="bbox_inside_w", needs_gradient=False)]
 
     def forward(self, arguments, outputs, device=None, outputs_to_retain=None):
         if debug_fwd: print("--> Entering forward in {}".format(self.name))
@@ -71,9 +75,9 @@ class ProposalTargetLayer(UserFunction):
         gt_boxes = bottom[1][0,:]
 
         # For CNTK: convert and scale gt_box coords from x, y, w, h relative to x1, y1, x2, y2 absolute
-        im_width = 1000
+        im_width = 1000 # TODO: get image width and height OR better scale beforehand
         im_height = 1000
-        whwh = (im_width, im_height, im_width, im_height) # TODO: get image width and height OR better scale beforehand
+        whwh = (im_width, im_height, im_width, im_height)
         ngtb = np.vstack((gt_boxes[:, 0], gt_boxes[:, 1], gt_boxes[:, 0] + gt_boxes[:, 2], gt_boxes[:, 1] + gt_boxes[:, 3]))
         gt_boxes[:, :-1] = ngtb.transpose() * whwh
 
@@ -105,6 +109,8 @@ class ProposalTargetLayer(UserFunction):
         num_images = 1
         rois_per_image = self._rois_per_image # ??? TODO: why depending on batch size: cfg.TRAIN.BATCH_SIZE / num_images
         fg_rois_per_image = np.round(cfg.TRAIN.FG_FRACTION * rois_per_image).astype(int)
+
+        # import pdb; pdb.set_trace()
 
         # Sample rois with classification labels and bounding box regression
         # targets
@@ -141,11 +147,19 @@ class ProposalTargetLayer(UserFunction):
             bbox_inside_weights_padded[:num_found_rois, :] = bbox_inside_weights
             bbox_inside_weights = bbox_inside_weights_padded
 
+        # for CNTK: get rid of batch ind zeros and add batch axis
+        rois = rois[:,1:]
+        # For CNTK: for the roipooling layer convert and scale roi coords back to x, y, w, h relative from x1, y1, x2, y2 absolute
+        # TODO: this is for now done in FasterRCNN.py as part of the network to also apply this in eval
+        #rois = np.vstack((rois[:, 0], rois[:, 1], rois[:, 2] - rois[:, 0], rois[:, 3] - rois[:, 1])).transpose()
+        #rois[:,0] /= im_width
+        #rois[:,1] /= im_height
+        #rois[:,2] /= im_width
+        #rois[:,3] /= im_height
+
         # sampled rois
         # top[0].reshape(*rois.shape)
         # top[0].data[...] = rois
-        # for CNTK: get rid of batch ind zeros and add batch axis
-        rois = rois[:,1:]
         rois.shape = (1,) + rois.shape
         outputs[self.outputs[0]] = np.ascontiguousarray(rois)
 
@@ -160,6 +174,7 @@ class ProposalTargetLayer(UserFunction):
         # bbox_targets
         # top[2].reshape(*bbox_targets.shape)
         # top[2].data[...] = bbox_targets
+
         bbox_targets.shape = (1,) + bbox_targets.shape # batch axis
         outputs[self.outputs[2]] = np.ascontiguousarray(bbox_targets)
 

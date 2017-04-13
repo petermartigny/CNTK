@@ -34,7 +34,7 @@ cfg = __C
 
 __C.CNTK = edict()
 
-__C.CNTK.MAX_EPOCHS = 3
+__C.CNTK.MAX_EPOCHS = 20
 
 __C.CNTK.USE_GROCERY = True
 __C.CNTK.NUM_CLASSES = 17

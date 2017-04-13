@@ -25,7 +25,8 @@ sys.path.append(os.path.join(abs_path, "lib", "rpn"))
 sys.path.append(os.path.join(abs_path, "lib", "nms"))
 sys.path.append(os.path.join(abs_path, "lib", "nms", "gpu"))
 
-from cntk import Trainer, UnitType, load_model, user_function, Axis, input, parameter, times, combine, relu, softmax, roipooling, reduce_sum, slice, splice, reshape, plus, CloneMethod
+from cntk import Trainer, UnitType, load_model, user_function, Axis, input, parameter, times, combine, relu, \
+    softmax, roipooling, reduce_sum, slice, splice, reshape, plus, CloneMethod, minus, element_times, alias
 from cntk.io import MinibatchSource, ImageDeserializer, CTFDeserializer, StreamDefs, StreamDef, TraceLevel
 from cntk.io.transforms import scale
 from cntk.initializer import glorot_uniform
@@ -42,6 +43,7 @@ from lib.rpn.cntk_smoothL1_loss import SmoothL1Loss
 from lib.rpn.cntk_ignore_label import IgnoreLabel
 from cntk_helpers import visualizeResultsFaster
 from lib.fast_rcnn.config import cfg
+from lib.fast_rcnn.bbox_transform import bbox_transform_inv
 
 ###############################################################
 ###############################################################
@@ -165,7 +167,9 @@ def faster_rcnn_predictor(features, gt_boxes, n_classes):
 
     # Clone the conv layers and the fully connected layers of the network
     conv_layers = combine([conv_node.owner]).clone(CloneMethod.freeze, {feature_node: placeholder()})
-    fc_layers = combine([last_node.owner]).clone(CloneMethod.clone, {pool_node: placeholder()})
+    #fc_layers = combine([last_node.owner]).clone(CloneMethod.clone, {pool_node: placeholder()})
+    # TODO: setting to freeze for now to try learing rates
+    fc_layers = combine([last_node.owner]).clone(CloneMethod.freeze, {pool_node: placeholder()})
 
     # Create the Faster R-CNN model
     feat_norm = features - Constant(114)
@@ -173,8 +177,8 @@ def faster_rcnn_predictor(features, gt_boxes, n_classes):
 
     # RPN network
     rpn_conv_3x3  = Convolution((3,3), 256, activation=relu, pad=True, strides=1)(conv_out)
-    rpn_cls_score = Convolution((1,1), 18, activation=None) (rpn_conv_3x3) # 2(bg/fg)  * 9(anchors)
-    rpn_bbox_pred = Convolution((1,1), 36, activation=None) (rpn_conv_3x3) # 4(coords) * 9(anchors)
+    rpn_cls_score = Convolution((1,1), 18, activation=None, name="rpn_cls_score") (rpn_conv_3x3) # 2(bg/fg)  * 9(anchors)
+    rpn_bbox_pred = Convolution((1,1), 36, activation=None, name="rpn_bbox_pred") (rpn_conv_3x3) # 4(coords) * 9(anchors)
 
     # RPN targets
     # Comment: rpn_cls_score is only passed   vvv   to get width and height of the conv feature map ...
@@ -193,7 +197,7 @@ def faster_rcnn_predictor(features, gt_boxes, n_classes):
     bg_scores_rshp = reshape(bg_scores, (1,num_predictions))
     fg_scores_rshp = reshape(fg_scores, (1,num_predictions))
     rpn_cls_score_rshp = splice(bg_scores_rshp, fg_scores_rshp, axis=0)
-    rpn_cls_prob = softmax(rpn_cls_score_rshp, axis=0)
+    rpn_cls_prob = softmax(rpn_cls_score_rshp, axis=0, name="objness_softmax")
     # Reshape targets
     rpn_labels_rshp = reshape(rpn_labels, (1,num_predictions))
 
@@ -225,14 +229,22 @@ def faster_rcnn_predictor(features, gt_boxes, n_classes):
     rpn_rois = plus(rpn_rois_raw, 0, name='rpn_rois')
     ptl = user_function(ProposalTargetLayer(rpn_rois, gt_boxes))
     rois_raw = ptl.outputs[0]
-    rois = plus(rois_raw, 0, name='rpn_target_rois')
+    rois = alias(rois_raw, name='rpn_target_rois')
     labels = ptl.outputs[1]
     bbox_targets = ptl.outputs[2]
     bbox_inside_weights = ptl.outputs[3]
 
     # RCNN
     # Comment: training uses 'rois' from ptl (sampled), eval uses 'rpn_rois' from proposal_layer
-    roi_out = roipooling(conv_out, rois, (roi_dim, roi_dim))
+
+    # for the roipooling layer we convert and scale roi coords back to x, y, w, h relative from x1, y1, x2, y2 absolute
+    roi_xy1 = slice(rois, 1, 0, 2)
+    roi_xy2 = slice(rois, 1, 2, 4)
+    roi_wh = minus(roi_xy2, roi_xy1)
+    roi_xywh = splice(roi_xy1, roi_wh, axis=1)
+    scaled_rois = element_times(roi_xywh, (1.0 / image_width))
+
+    roi_out = roipooling(conv_out, scaled_rois, (roi_dim, roi_dim))
     fc_out  = fc_layers(roi_out)
 
     # prediction head
@@ -317,6 +329,7 @@ def train_faster_rcnn(debug_output=False):
     #   stepsize: 50000
     #   momentum: 0.9
     #   weight_decay: 0.0005
+    # ==> CNTK: lr_per_sample = [0.001] * 10 + [0.0001] * 10 + [0.00001]
     l2_reg_weight = 0.0005
     lr_per_sample = [0.001] * 10 + [0.0001] * 10 + [0.00001]
     lr_schedule = learning_rate_schedule(lr_per_sample, unit=UnitType.sample)
@@ -352,25 +365,32 @@ def regress_rois(roi_proposals, roi_regression_factors, labels):
     for i in range(len(labels)):
         label = labels[i]
         if label > 0:
-            t_ = roi_regression_factors[i,(label-1)*4:label*4]
-            roi_coords = roi_proposals[i,:]
-            x_r = roi_coords[0]
-            y_r = roi_coords[1]
-            w_r = roi_coords[2]
-            h_r = roi_coords[3]
+            # t_ = roi_regression_factors[i:i+1,label*4:(label+1)*4]
+            t_ = roi_regression_factors[i:i+1,(label-1)*4:label*4]
+            roi_coords = roi_proposals[i:i+1,:]
 
-            #import pdb;
-            #pdb.set_trace()
+            # import pdb; pdb.set_trace()
+
+            regressed_rois = bbox_transform_inv(roi_coords, t_)
+            #x_r = roi_coords[0]
+            #y_r = roi_coords[1]
+            #w_r = roi_coords[2] - roi_coords[0]
+            #h_r = roi_coords[3] - roi_coords[1]
 
             # x_pred = x_r + t_x * w_r
             # y_pred = y_r + t_x * h_r
             # w_pred = exp(t_w) * w_r
             # h_pred = exp(t_h) * h_r
-            roi_proposals[i,0] = x_r + t_[0] * w_r
-            roi_proposals[i,1] = y_r + t_[1] * h_r
-            roi_proposals[i,2] = exp(t_[2]) * w_r
-            roi_proposals[i,3] = exp(t_[3]) * h_r
+            #x_pred = x_r + t_[0] * w_r
+            #y_pred = y_r + t_[1] * h_r
+            #w_pred = exp(t_[2]) * w_r
+            #h_pred = exp(t_[3]) * h_r
 
+            #roi_proposals[i, 0] = x_pred
+            #roi_proposals[i, 1] = y_pred
+            #roi_proposals[i, 2] = x_pred + w_pred
+            #roi_proposals[i, 3] = y_pred + h_pred
+            roi_proposals[i,:] = regressed_rois
     return roi_proposals
 
 # Tests a Faster R-CNN model
@@ -408,10 +428,9 @@ def eval_faster_rcnn(model, debug_output=False):
         labels = out_cls_pred.argmax(axis=1)
         scores = out_cls_pred.max(axis=1).tolist()
 
-        import pdb; pdb.set_trace()
-
         # apply regression to bbox coordinates
-        regressed_rois = regress_rois(out_rpn_rois, out_bbox_regr, labels)
+        #regressed_rois = regress_rois(out_rpn_rois, out_bbox_regr, labels)
+        regressed_rois = out_rpn_rois
 
         # visualize results
         imgDebug = visualizeResultsFaster(imgPath, labels, scores, regressed_rois, 1000, 1000,

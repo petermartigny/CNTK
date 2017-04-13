@@ -21,7 +21,7 @@ class SmoothL1Loss(UserFunction):
         self._sigma = sigma
 
     def infer_outputs(self):
-        return [output_variable(self.inputs[0].shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes)]
+        return [output_variable(self.inputs[0].shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes)] #, name="SmoothL1Loss")]
 
     def forward(self, arguments, device=None, outputs_to_retain=None):
         if debug_fwd: print("--> Entering forward in {}".format(self.name))
@@ -33,18 +33,15 @@ class SmoothL1Loss(UserFunction):
         # smooth_L1(x) = | 0.5 * x^2     , if |x| < 1 ## corresponds to \simga/2 * x^2 in huber loss
         #                | |x| - 0.5     , otherwise
 
-        predictions = arguments[0][0,:]
-        targets = arguments[1][0,0,:]
-        arg_shape = arguments[2].shape
-        if(arg_shape[1] == 1):
-            bbox_inside_weights = arguments[2][0,0,:]
-        else:
-            bbox_inside_weights = arguments[2][0,:]
-
+        predictions = arguments[0]#[0,:]
+        targets = arguments[1]#[0,0,:]
+        bbox_inside_weights = arguments[2]#[0, 0, :]
         sigma = self._sigma ## sigma is one for Faster R-CNN and ignored here for now
 
         diff = predictions - targets
         diff = diff * bbox_inside_weights
+
+        #import pdb; pdb.set_trace()
 
         x = np.abs(diff)
         lt1 = np.where(x < 1)
@@ -52,7 +49,6 @@ class SmoothL1Loss(UserFunction):
         l2 = x * x * .5
         loss[lt1] = l2[lt1]
 
-        loss.shape = (1,) + loss.shape
         return diff, loss
 
     def backward(self, state, root_gradients, variables):

@@ -58,6 +58,10 @@ def visualizeResultsFaster(imgPath, roiLabels, roiScores, roiRelCoords, padWidth
             else:
                 color = getColorsPalette()[label]
             rect = [int(rect_scale * i) for i in roiRelCoords[roiIndex]]
+            rect[0] = max(0, min(padWidth, rect[0]))
+            rect[1] = max(0, min(padHeight, rect[1]))
+            rect[2] = max(0, min(padWidth, rect[2]))
+            rect[3] = max(0, min(padHeight, rect[3]))
 
             # draw in higher iterations only the detections
             if iter == 0 and boDrawNegativeRois:
@@ -193,7 +197,11 @@ def drawRectangles(img, rects, color = (0, 255, 0), thickness = 2):
     for rect in rects:
         pt1 = tuple(ToIntegers(rect[0:2]))
         pt2 = tuple(ToIntegers(rect[2:]))
-        cv2.rectangle(img, pt1, pt2, color, thickness)
+        try:
+            cv2.rectangle(img, pt1, pt2, color, thickness)
+        except:
+            import pdb; pdb.set_trace()
+            print("Unexpected error:", sys.exc_info()[0])
 
 def drawCrossbar(img, pt):
     (x,y) = pt
