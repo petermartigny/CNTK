@@ -1,0 +1,47 @@
+#!/bin/bash
+
+. $TEST_ROOT_DIR/run-test-common
+
+FCN_DATA_DIR=$TEST_RUN_DIR/Data
+
+function edit_data_file
+{
+  local SedCmd="\
+    s/.*|/|/g;\
+    h;\
+    s/0/1 0/g;\
+    s/255/0 1/g;\
+    s/features/labels/g;\
+    G;\
+    x;\
+    s/255/1/g;\
+    s/0/1/g;\
+    s/features/ignoreMask/g;\
+    G;\
+    s/^\(.*\)\n\(.*\)\n\(.*\)/\1\t\2\t\3/"
+  cat $1 | sed -e "$SedCmd" >$2
+}
+
+function prepare_data
+{
+  echo === Preparing training and test data
+  mkdir $FCN_DATA_DIR >/dev/null 2>&1 || cleanup
+  edit_data_file $TEST_DATA_DIR/Train_cntk_text.txt $FCN_DATA_DIR/Train_cntk_fcn_text.txt || cleanup
+  edit_data_file $TEST_DATA_DIR/Test_cntk_text.txt $FCN_DATA_DIR/Test_cntk_fcn_text.txt || cleanup
+}
+
+function cleanup
+{
+  local ExitCode=$?
+  echo === Deleting training and test data
+  rm -rf $FCN_DATA_DIR
+  exit $ExitCode
+}
+
+prepare_data || cleanup
+
+echo === Running training
+DeleteModelsAfterTest=1
+# Usage: cntkrun <CNTK config file name> <additional CNTK args>
+cntkrun fcn.cntk
+cleanup

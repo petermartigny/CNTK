@@ -1,0 +1,198 @@
+# Convolution + Batch Normalization.
+ConvBNLayer {outChannels, kernel, stride, bnTimeConst} = Sequential(
+    ConvolutionalLayer {outChannels, kernel, init = "heNormal", stride = stride, pad = true, bias = false} :
+    BatchNormalizationLayer {spatialRank = 2, normalizationTimeConstant = bnTimeConst, useCntkEngine = true}
+)
+
+# Convolution with kernel size 1 x 1 + Batch Normalization.
+# Needs special treatment in order to explicitly disable padding (there seems to be a bug in CNTK where
+# an assert in ConvolveGeometry.h fails incorrectly for pad == true, input size 32 x 32, kernel size 1 x 1,
+# and stride 2).
+Conv1x1BNLayer {outChannels, stride, bnTimeConst} = Sequential(
+    ConvolutionalLayer {outChannels, (1:1), init = "heNormal", stride = stride, pad = false, bias = false} :
+    BatchNormalizationLayer {spatialRank = 2, normalizationTimeConstant = bnTimeConst, useCntkEngine = true}
+)
+
+# Convolution + Batch Normalization + Rectifier Linear.
+ConvBNReLULayer {outChannels, kernelSize, stride, bnTimeConst} = Sequential(
+    ConvBNLayer {outChannels, kernelSize, stride, bnTimeConst} :
+    ReLU
+)
+
+# The basic ResNet block contains two 3 x 3 convolutions, which is added to the orignal input
+# of the block.
+ResNetBasic {outChannels, bnTimeConst} = {
+    apply (x) = {
+        # Convolution
+        b = Sequential (
+            ConvBNReLULayer {outChannels, (3:3), (1:1), bnTimeConst} :
+            ConvBNLayer {outChannels, (3:3), (1:1), bnTimeConst}) (x)
+
+        p = Plus(b, x)
+        r = ReLU(p)
+    }.r
+}.apply
+
+# A block to reduce the feature map resolution. Two 3 x 3 convolutions with stride, which is
+# added to the original input with 1 x 1 convolution and stride.
+ResNetBasicInc {outChannels, stride, bnTimeConst} = {
+    apply (x) = {
+        # Convolution
+        b = Sequential (
+            ConvBNReLULayer {outChannels, (3:3), stride, bnTimeConst} :
+            ConvBNLayer {outChannels, (3:3), (1:1), bnTimeConst}) (x)
+
+        # Shortcut
+        s = Conv1x1BNLayer {outChannels, stride, bnTimeConst} (x)
+
+        p = Plus(b, s)
+        r = ReLU(p)
+    }.r
+}.apply
+
+# Convolution layer with 1x1 kernel.
+ConvLayer1x1(
+    input,              # input node
+    inputChannels,      # number of input channels
+    outputChannels,     # number of output channels
+    horizontalStride,   # horizontal stride
+    verticalStride,     # vertical stride
+    wScale              # initial scale for weights <?>
+    ) = [
+    kernelShape = (1:1:inputChannels)
+    outputShape = (1:1:outputChannels)
+    strideShape = (horizontalStride:verticalStride:inputChannels)
+    W = Parameter(outputChannels, inputChannels, init ='gaussian', initValueScale = wScale)
+    c = Convolution(W, input, kernelShape, mapDims = outputShape, stride = strideShape,
+                    autoPadding = false, imageLayout = "cudnn")
+].c
+
+# Convolution layer with 1x1 kernel whose weights are initialized using
+# method of He et al. (https://arxiv.org/abs/1502.01852).
+ConvLayer1x1MSRAInit(
+    input,              # input node
+    inputChannels,      # number of input channels
+    outputChannels,     # number of output channels
+    horizontalStride,   # horizontal stride
+    verticalStride      # vertical stride
+    ) = [
+    kernelShape = (1:1:inputChannels)
+    outputShape = (1:1:outputChannels)
+    strideShape = (horizontalStride:verticalStride:inputChannels)
+    W = Parameter(outputChannels, inputChannels, init ='heNormal')
+    c = Convolution(W, input, kernelShape, mapDims = outputShape, stride = strideShape,
+                    autoPadding = false, imageLayout = "cudnn")
+].c
+
+# Learnable upsampling layer initialized with bilinear weights.
+LearnableUpsamplingLayer{
+    inputChannels,      # number of input channels
+    outputChannels,     # number of output channels
+    kernelSize,         # kernel size (both horizontal and vertical)
+    stride              # stride (both horizontal and vertical)
+    } = ConvolutionTransposeLayer{
+            outputChannels,
+            (kernelSize:kernelSize),
+            inputChannels,
+            stride = stride,
+            init = 'bilinear',
+            bias = false,
+            initValueScale = 1.0}
+
+# Crop node with specified offsets.
+CropManual(inputShape, outputShape, xOffset = 0, yOffset = 0, tag = '') = new ComputationNode [
+    operation = 'Crop';
+    inputs = (inputShape:outputShape) /*plus the function args*/
+]
+
+# Crop node with automatically computed offsets based on a least common ancestor of input nodes.
+CropAutomatic(inputShape, outputShape, tag = '') = new ComputationNode [
+    operation = 'Crop';
+    inputs = (inputShape:outputShape) /*plus the function args*/
+]
+
+# Crop node with automatically computed offsets based on specified ancestors of input nodes.
+CropAutomaticGivenAncestors(inputShape, outputShape, inputAncestor, outputAncestor, tag = '') = new ComputationNode [
+    operation = 'Crop';
+    inputs = (inputShape:outputShape:inputAncestor:outputAncestor) /*plus the function args*/
+]
+
+# Epoch accumulator node, currently used in mean IOU criteria.
+Accumulator(input, tag = '') = new ComputationNode [
+    operation = 'EpochAccumulator';
+    inputs = (input) /*plus the function args*/
+]
+
+# Softmax along arbitrary axis.
+SoftmaxND(z, axis = 1) = [
+    axis1 = axis
+    s = Exp(out - ReduceLogSum(out, axis = axis1))
+].s
+
+# Hardmax along arbitrary axis.
+HardMaxND (z, axis = 1) =
+{
+    maxVals = ReduceMax (z, axis = axis)   # e.g. [21 x 50000] -> [1 x 50000]
+    # This could cause problems with multiple values matching maximum value.
+    isMax = Equal (z, maxVals)  # 1 for the value that matches the max; 0 else.
+}.isMax
+
+# Mean IOU layer.
+MeanIOUError(label, out, mask, classCount = 1) = [
+    outHardmax = HardMaxND (out, axis = 3)
+    outMasked = outHardmax .* mask
+    labelMasked = label .* mask
+    intersection = outMasked .* labelMasked
+    union = (labelMasked + outMasked) - intersection
+    intersectionFlat = FlattenDimensions(intersection, 0, 3)        # [W x H x K x N] -> [WH x K x N]
+    intersectionByClass = ReduceSum (intersectionFlat, axis = 1)    # [WH x K x N] -> [1 x K x N]
+    unionFlat = FlattenDimensions(union, 0, 3)                      # [W x H x K x N] -> [WH x K x N]
+    unionByClass = ReduceSum (unionFlat, axis = 1)                  # [WH x K x N] -> [1 x K x N]
+    i = Accumulator(intersectionByClass)                            # [1 x K x N] -> [1 x K]
+    u = Accumulator(unionByClass)                                   # [1 x K x N] -> [1 x K]
+    reciprocalUnion = Reciprocal(u + ConstantTensor(0.00001, (1)))
+    iou = i .* reciprocalUnion
+    iouSum = ReduceSum(iou)                                         # [1 x K] -> [1]
+    norm = Reciprocal(ConstantTensor(classCount, (1)))
+    miou = iouSum .* norm
+    errMiou = BS.Constants.One - miou
+].errMiou
+
+# Pixel wise error.
+PixelError(label, out, mask) = [
+    outHardmax = HardMaxND (out, axis = 3)
+    pixelNorm = Reciprocal(ReduceSum (mask)) # 1 / pixel_count
+    acc = ReduceSum (ElementTimes (label, outHardmax), axis = 3)
+    diffs = Minus (BS.Constants.One, acc) .* mask
+    errSum = ReduceSum (diffs)
+    err = errSum .* pixelNorm
+].err
+
+# Cross entropy with softmax along arbitrary axis.
+# TODO (https://microsoft.visualstudio.com/OS/_workitems?id=9600624):
+# This function assumes that label and out arguments are multiplied elementwise by
+# ignore mask outside of the function. This leads to incorrect loss value in which
+# ignored pixels also contribute to the loss. In correct implementation, elementwise
+# multiplication should happen before the final reduction step.
+CrossEntropyWithSoftmaxND(label, out, axis = 1, tag = '') = [
+    axis1 = axis
+    logSum = ReduceLogSum (out, axis = axis1)
+    diff = ReduceSum (ElementTimes (label, out), axis = axis)
+    tag1 = tag
+    ce = ReduceSum(Minus(logSum, diff), tag = tag1)
+].ce
+
+# Cross entropy with softmax along arbitrary axis, where loss value
+# is normalized by the number of valid pixels in minibatch.
+CrossEntropyWithSoftmaxNDNormalized(label, out, ignore, axis = 1, tag = '') = [
+    out_max = ReduceMax(out, axis = axis)
+    out_shift = Minus(out, out_max)
+    log_sum = ReduceLogSum(out_shift, axis = axis)
+    logits_per_class = ElementTimes(label, out_shift)
+    logits = ReduceSum(logits_per_class, axis = axis)
+    diff = Minus(log_sum, logits)
+    diff_valid = ElementTimes(diff, ignore)
+    ce_unnorm = SumElements(diff_valid)
+    norm_factor = Reciprocal(SumElements(ignore))
+    ce = ElementTimes(ce_unnorm, norm_factor, tag = tag)
+].ce 
