@@ -67,9 +67,13 @@ class AnchorTargetLayer(UserFunction):
         # bbox_targets
         ##top[1].reshape(1, A * 4, height, width)
         bbox_target_shape = (1, A * 4, height, width)
+        # bbox_inside_weights
+        #top[2].reshape(1, A * 4, height, width)
+        bbox_inside_weights_shape = (1, A * 4, height, width)
 
         return [output_variable(labelShape, self.inputs[0].dtype, self.inputs[0].dynamic_axes, needs_gradient=False),
-                output_variable(bbox_target_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes, needs_gradient=False)]
+                output_variable(bbox_target_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes, needs_gradient=False),
+                output_variable(bbox_inside_weights_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes, needs_gradient=False),]
 
     def forward(self, arguments, outputs, device=None, outputs_to_retain=None):
         if debug_fwd: print("--> Entering forward in {}".format(self.name))
@@ -200,22 +204,6 @@ class AnchorTargetLayer(UserFunction):
         bbox_inside_weights = np.zeros((len(inds_inside), 4), dtype=np.float32)
         bbox_inside_weights[labels == 1, :] = np.array(cfg.TRAIN.RPN_BBOX_INSIDE_WEIGHTS)
 
-        bbox_outside_weights = np.zeros((len(inds_inside), 4), dtype=np.float32)
-        if cfg.TRAIN.RPN_POSITIVE_WEIGHT < 0:
-            # uniform weighting of examples (given non-uniform sampling)
-            num_examples = np.sum(labels >= 0)
-            positive_weights = np.ones((1, 4)) * 1.0 / num_examples
-            negative_weights = np.ones((1, 4)) * 1.0 / num_examples
-        else:
-            assert ((cfg.TRAIN.RPN_POSITIVE_WEIGHT > 0) &
-                    (cfg.TRAIN.RPN_POSITIVE_WEIGHT < 1))
-            positive_weights = (cfg.TRAIN.RPN_POSITIVE_WEIGHT /
-                                np.sum(labels == 1))
-            negative_weights = ((1.0 - cfg.TRAIN.RPN_POSITIVE_WEIGHT) /
-                                np.sum(labels == 0))
-        bbox_outside_weights[labels == 1, :] = positive_weights
-        bbox_outside_weights[labels == 0, :] = negative_weights
-
         if DEBUG:
             self._sums += bbox_targets[labels == 1, :].sum(axis=0)
             self._squared_sums += (bbox_targets[labels == 1, :] ** 2).sum(axis=0)
@@ -230,6 +218,7 @@ class AnchorTargetLayer(UserFunction):
         # map up to original set of anchors
         labels = _unmap(labels, total_anchors, inds_inside, fill=-1)
         bbox_targets = _unmap(bbox_targets, total_anchors, inds_inside, fill=0)
+        bbox_inside_weights = _unmap(bbox_inside_weights, total_anchors, inds_inside, fill=0)
 
         if DEBUG:
             print ('rpn: max max_overlap', np.max(max_overlaps))
@@ -254,6 +243,15 @@ class AnchorTargetLayer(UserFunction):
         # top[1].reshape(*bbox_targets.shape)
         # top[1].data[...] = bbox_targets
         outputs[self.outputs[1]] = np.ascontiguousarray(bbox_targets)
+
+        # bbox_inside_weights
+        bbox_inside_weights = bbox_inside_weights \
+            .reshape((1, height, width, A * 4)).transpose(0, 3, 1, 2)
+        assert bbox_inside_weights.shape[2] == height
+        assert bbox_inside_weights.shape[3] == width
+        #top[2].reshape(*bbox_inside_weights.shape)
+        #top[2].data[...] = bbox_inside_weights
+        outputs[self.outputs[2]] = np.ascontiguousarray(bbox_inside_weights)
 
         # No state needs to be passed to backward() so we just pass None
         return None

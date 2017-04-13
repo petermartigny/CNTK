@@ -9,6 +9,7 @@ import numpy as np
 import os, sys
 from matplotlib.pyplot import imshow, imsave
 from PIL import ImageFont
+from math import exp
 
 available_font = "arial.ttf"
 try:
@@ -54,7 +55,7 @@ features_stream_name = 'features'
 roi_stream_name = 'roiAndLabel'
 
 # from PARAMETERS.py
-grocery = False
+grocery = cfg["CNTK"].USE_GROCERY
 if grocery:
     classes = ('__background__',  # always index 0
                'avocado', 'orange', 'butter', 'champagne', 'eggBox', 'gerkin', 'joghurt', 'ketchup',
@@ -63,8 +64,8 @@ if grocery:
     num_channels = 3
     image_height = 1000
     image_width = 1000
-    num_classes = 17
-    num_rois = cfg["CNTK"].ROIS_PER_IMAGE
+    num_classes = len(classes)
+    num_rois = cfg["CNTK"].INPUT_ROIS_PER_IMAGE
     epoch_size = 25
     num_test_images = 5
     mb_size = 1
@@ -74,14 +75,16 @@ else:
     classes = ('__background__',  # always index 0
                'aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car', 'cat', 'chair', 'cow', 'diningtable',
                'dog', 'horse', 'motorbike', 'person', 'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor')
-    base_path = "C:/src/CNTK/Examples/Image/Detection/FastRCNN/proc/Grocery_100/rois/"
+    base_path = "C:/src/CNTK/Examples/Image/DataSets/Pascal/mappings/"
+    map_filename_postfix = "val2007.txt"
+    rois_filename_postfix = "val2007_rois_topleft_wh_rel.txt"
     num_channels = 3
     image_height = 1000
     image_width = 1000
-    num_classes = 17
-    num_rois = cfg["CNTK"].ROIS_PER_IMAGE
-    epoch_size = 25
-    num_test_images = 5
+    num_classes = len(classes)
+    num_rois = cfg["CNTK"].INPUT_ROIS_PER_IMAGE
+    epoch_size = 5010
+    num_test_images = 50
     mb_size = 1
     max_epochs = cfg["CNTK"].MAX_EPOCHS
     momentum_time_constant = 10
@@ -178,6 +181,7 @@ def faster_rcnn_predictor(features, gt_boxes, n_classes):
     atl = user_function(AnchorTargetLayer(rpn_cls_score, gt_boxes, im_info=im_info))
     rpn_labels = atl.outputs[0]
     rpn_bbox_targets = atl.outputs[1]
+    rpn_bbox_inside_weights = atl.outputs[2]
 
     # getting rpn class scores and rpn targets into the correct shape for ce
     # i.e., (2, 33k), where each group of two corresponds to a (bg, fg) pair for score or target
@@ -193,7 +197,7 @@ def faster_rcnn_predictor(features, gt_boxes, n_classes):
     # Reshape targets
     rpn_labels_rshp = reshape(rpn_labels, (1,num_predictions))
 
-    # Ignore predictions for the 'ignore label', i.e. set target and prediction to 0 --> needs to be softmaxed before
+    # Ignore label predictions for the 'ignore label', i.e. set target and prediction to 0 --> needs to be softmaxed before
     ignore = user_function(IgnoreLabel(rpn_cls_prob, rpn_labels_rshp, ignore_label=-1))
     rpn_cls_prob_ignore = ignore.outputs[0]
     fg_targets = ignore.outputs[1]
@@ -202,7 +206,7 @@ def faster_rcnn_predictor(features, gt_boxes, n_classes):
 
     # RPN losses
     rpn_loss_cls = cross_entropy_with_softmax(rpn_cls_prob_ignore, rpn_labels_ignore, axis=0)
-    rpn_loss_bbox = user_function(SmoothL1Loss(rpn_bbox_pred, rpn_bbox_targets))
+    rpn_loss_bbox = user_function(SmoothL1Loss(rpn_bbox_pred, rpn_bbox_targets, rpn_bbox_inside_weights))
 
     # ROI proposal
     # - ProposalLayer:
@@ -224,6 +228,7 @@ def faster_rcnn_predictor(features, gt_boxes, n_classes):
     rois = plus(rois_raw, 0, name='rpn_target_rois')
     labels = ptl.outputs[1]
     bbox_targets = ptl.outputs[2]
+    bbox_inside_weights = ptl.outputs[3]
 
     # RCNN
     # Comment: training uses 'rois' from ptl (sampled), eval uses 'rpn_rois' from proposal_layer
@@ -242,7 +247,7 @@ def faster_rcnn_predictor(features, gt_boxes, n_classes):
 
     # loss function
     loss_cls = cross_entropy_with_softmax(cls_score, labels, axis=1)
-    loss_box = user_function(SmoothL1Loss(bbox_pred, bbox_targets))
+    loss_box = user_function(SmoothL1Loss(bbox_pred, bbox_targets, bbox_inside_weights))
 
     loss_cls_scalar = reduce_sum(loss_cls)
     loss_box_scalar = reduce_sum(loss_box)
@@ -305,8 +310,15 @@ def train_faster_rcnn(debug_output=False):
         plot(loss, os.path.join(abs_path, "graph_frcn." + graph_type))
 
     # Set learning parameters
+    # Caffe Faster R-CNN parameters are:
+    #   base_lr: 0.001
+    #   lr_policy: "step"
+    #   gamma: 0.1
+    #   stepsize: 50000
+    #   momentum: 0.9
+    #   weight_decay: 0.0005
     l2_reg_weight = 0.0005
-    lr_per_sample = [0.00001] * 10 + [0.000001] * 5 + [0.0000001]
+    lr_per_sample = [0.001] * 10 + [0.0001] * 10 + [0.00001]
     lr_schedule = learning_rate_schedule(lr_per_sample, unit=UnitType.sample)
     mm_schedule = momentum_as_time_constant_schedule(momentum_time_constant)
 
@@ -326,6 +338,8 @@ def train_faster_rcnn(debug_output=False):
             trainer.train_minibatch(data)                                    # update model with it
             sample_count += trainer.previous_minibatch_sample_count          # count samples processed so far
             progress_printer.update_with_trainer(trainer, with_metric=True)  # log progress
+            if sample_count % 100 == 0:
+                print("Processed {} samples".format(sample_count))
 
         progress_printer.epoch_summary(with_metric=True)
         if debug_output:
@@ -333,6 +347,31 @@ def train_faster_rcnn(debug_output=False):
 
     return loss
 
+
+def regress_rois(roi_proposals, roi_regression_factors, labels):
+    for i in range(len(labels)):
+        label = labels[i]
+        if label > 0:
+            t_ = roi_regression_factors[i,(label-1)*4:label*4]
+            roi_coords = roi_proposals[i,:]
+            x_r = roi_coords[0]
+            y_r = roi_coords[1]
+            w_r = roi_coords[2]
+            h_r = roi_coords[3]
+
+            #import pdb;
+            #pdb.set_trace()
+
+            # x_pred = x_r + t_x * w_r
+            # y_pred = y_r + t_x * h_r
+            # w_pred = exp(t_w) * w_r
+            # h_pred = exp(t_h) * h_r
+            roi_proposals[i,0] = x_r + t_[0] * w_r
+            roi_proposals[i,1] = y_r + t_[1] * h_r
+            roi_proposals[i,2] = exp(t_[2]) * w_r
+            roi_proposals[i,3] = exp(t_[3]) * h_r
+
+    return roi_proposals
 
 # Tests a Faster R-CNN model
 def eval_faster_rcnn(model, debug_output=False):
@@ -365,14 +404,17 @@ def eval_faster_rcnn(model, debug_output=False):
         out_rpn_rois = output[out_dict['rpn_rois']][0]
         out_bbox_regr = output[out_dict['bbox_regr']][0]
 
-        # TODO: apply regression to bbox coordinates
-
         imgPath = img_file_names[i]
         labels = out_cls_pred.argmax(axis=1)
         scores = out_cls_pred.max(axis=1).tolist()
 
+        import pdb; pdb.set_trace()
+
+        # apply regression to bbox coordinates
+        regressed_rois = regress_rois(out_rpn_rois, out_bbox_regr, labels)
+
         # visualize results
-        imgDebug = visualizeResultsFaster(imgPath, labels, scores, out_rpn_rois, 1000, 1000,
+        imgDebug = visualizeResultsFaster(imgPath, labels, scores, regressed_rois, 1000, 1000,
                                     classes, nmsKeepIndices=None, boDrawNegativeRois=True)
 
         imsave("c:/temp/{}{}".format(i, os.path.basename(imgPath)), imgDebug)

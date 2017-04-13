@@ -49,9 +49,14 @@ class ProposalTargetLayer(UserFunction):
         #top[2].reshape(1, self._num_classes * 4)
         bbox_targets_shape = (self._rois_per_image, self._num_classes * 4)
 
+        # bbox_inside_weights
+        #top[3].reshape(1, self._num_classes * 4)
+        bbox_inside_weights_shape = (self._rois_per_image, self._num_classes * 4)
+
         return [output_variable(rois_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes, needs_gradient=False), # , name="rpn_target_rois"
                 output_variable(labels_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes, needs_gradient=False),
-                output_variable(bbox_targets_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes, needs_gradient=False)]
+                output_variable(bbox_targets_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes, needs_gradient=False),
+                output_variable(bbox_inside_weights_shape, self.inputs[0].dtype, self.inputs[0].dynamic_axes, needs_gradient=False)]
 
     def forward(self, arguments, outputs, device=None, outputs_to_retain=None):
         if debug_fwd: print("--> Entering forward in {}".format(self.name))
@@ -132,6 +137,10 @@ class ProposalTargetLayer(UserFunction):
             bbox_targets_padded[:num_found_rois, :] = bbox_targets
             bbox_targets = bbox_targets_padded
 
+            bbox_inside_weights_padded = np.zeros((rois_per_image, bbox_inside_weights.shape[1]), dtype=np.float32)
+            bbox_inside_weights_padded[:num_found_rois, :] = bbox_inside_weights
+            bbox_inside_weights = bbox_inside_weights_padded
+
         # sampled rois
         # top[0].reshape(*rois.shape)
         # top[0].data[...] = rois
@@ -153,6 +162,13 @@ class ProposalTargetLayer(UserFunction):
         # top[2].data[...] = bbox_targets
         bbox_targets.shape = (1,) + bbox_targets.shape # batch axis
         outputs[self.outputs[2]] = np.ascontiguousarray(bbox_targets)
+
+        # bbox_inside_weights
+        #top[3].reshape(*bbox_inside_weights.shape)
+        #top[3].data[...] = bbox_inside_weights
+        bbox_inside_weights.shape = (1,) + bbox_inside_weights.shape # batch axis
+        outputs[self.outputs[3]] = np.ascontiguousarray(bbox_inside_weights)
+
 
     def backward(self, state, root_gradients, variables):
         if debug_bkw: print("<-- Entering backward in {}".format(self.name))

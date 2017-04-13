@@ -16,8 +16,8 @@ class SmoothL1Loss(UserFunction):
     Computes a smooth L1 loss
     """
 
-    def __init__(self, arg1, arg2, name='SmoothL1Loss', sigma=None):
-        super(SmoothL1Loss, self).__init__([arg1, arg2], name=name)
+    def __init__(self, arg1, arg2, arg3, name='SmoothL1Loss', sigma=None):
+        super(SmoothL1Loss, self).__init__([arg1, arg2, arg3], name=name)
         self._sigma = sigma
 
     def infer_outputs(self):
@@ -34,10 +34,18 @@ class SmoothL1Loss(UserFunction):
         #                | |x| - 0.5     , otherwise
 
         predictions = arguments[0][0,:]
-        targets = arguments[1][0,:]
+        targets = arguments[1][0,0,:]
+        arg_shape = arguments[2].shape
+        if(arg_shape[1] == 1):
+            bbox_inside_weights = arguments[2][0,0,:]
+        else:
+            bbox_inside_weights = arguments[2][0,:]
+
         sigma = self._sigma ## sigma is one for Faster R-CNN and ignored here for now
 
         diff = predictions - targets
+        diff = diff * bbox_inside_weights
+
         x = np.abs(diff)
         lt1 = np.where(x < 1)
         loss = x - .5

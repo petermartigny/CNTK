@@ -166,7 +166,8 @@ class ProposalLayer(UserFunction):
         # pad with zeros if too few rois were found
         num_found_proposals = proposals.shape[0]
         if num_found_proposals < self._rois_per_image:
-            print("Only {} proposals generated in ProposalLayer".format(num_found_proposals))
+            if DEBUG:
+                print("Only {} proposals generated in ProposalLayer".format(num_found_proposals))
             proposals_padded = np.zeros(((self._rois_per_image,) + proposals.shape[1:]), dtype=np.float32)
             proposals_padded[:num_found_proposals, :] = proposals
             proposals = proposals_padded
